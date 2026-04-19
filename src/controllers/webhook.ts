@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { downloadMedia, sendWhatsAppReply } from '../services/whatsapp';
-import { analyzeMealImage, analyzeDietConversation } from '../services/gemini';
+import { analyzeMealImage, analyzeDietConversation, parseUserFoodSelection } from '../services/gemini';
 import { logMeal, getUserGoal, getDailyKcalSum, getMealsForToday, getStreakAndWeekly } from '../services/database';
 
 export const webhookRouter = Router();
@@ -73,52 +73,52 @@ webhookRouter.post('/', async (req: Request, res: Response) => {
                     // 1. STATEFUL MODE: If they are actively deciding what to log from an image
                     if (pendingMealCache.has(from)) {
                         const cachedItems = pendingMealCache.get(from)!;
-                        pendingMealCache.delete(from); // Clear cache immediately
 
                         if (text === 'none') {
+                            pendingMealCache.delete(from);
                             await sendWhatsAppReply(from, "Cancelled! Nothing was logged.");
                             return;
                         }
 
-                        let itemsToLog: any[] = [];
+                        let itemsToLog: any = [];
                         if (text === 'all') {
                             itemsToLog = cachedItems;
+                            pendingMealCache.delete(from); // Clear if they logged all
                         } else {
-                            // Extract numbers from text (e.g. "1, 3")
-                            const numbers = text.match(/\d+/g);
-                            if (numbers) {
-                                numbers.forEach((num: string) => {
-                                    const idx = parseInt(num) - 1;
-                                    if (cachedItems[idx]) itemsToLog.push(cachedItems[idx]);
-                                });
+                            itemsToLog = await parseUserFoodSelection(text, cachedItems);
+                        }
+
+                        if (itemsToLog === 'EXIT_CACHE') {
+                            pendingMealCache.delete(from);
+                            // FALLTHROUGH: They are asking a normal conversational question. Exit the Stateful mode and drop them into Stateless routing below!
+                            console.log("Exited Stateful cache gracefully.");
+                        } else {
+                            if (!Array.isArray(itemsToLog) || itemsToLog.length === 0) {
+                                await sendWhatsAppReply(from, "I didn't understand that selection. Reply with the menu numbers, or ask me a generic question to exit the menu mode!");
+                                return;
                             }
+
+                            // Log the items
+                            let totalKcalLogged = 0;
+                            let names = [];
+                            let macros = { p: 0, c: 0, f: 0 };
+
+                            for (const item of itemsToLog) {
+                                await logMeal(from, item);
+                                totalKcalLogged += item.kcal;
+                                macros.p += item.protein_g;
+                                macros.c += item.carbs_g;
+                                macros.f += item.fat_g;
+                                names.push(item.dish);
+                            }
+
+                            const dailySum = await getDailyKcalSum(from);
+                            const goal = await getUserGoal(from);
+                            const { streak } = await getStreakAndWeekly(from, goal);
+
+                            await sendWhatsAppReply(from, `✅ *Successfully Logged:*\n${names.join(', ')}\n\n🔥 +${totalKcalLogged} kcal\n🥩 ${macros.p}g Protein | 🍞 ${macros.c}g Carbs | 🥑 ${macros.f}g Fat\n\n📊 *Today's Progress*: ${dailySum}/${goal} kcal\n🔥 *${streak} Day Goal Streak!*\n\n_(Menu is still active! Reply with more numbers to log them, or ask a question to exit!)_`);
+                            return; // Stay in menu loop
                         }
-
-                        if (itemsToLog.length === 0) {
-                            await sendWhatsAppReply(from, "I didn't understand that selection, so I cancelled the log. Please upload the photo again!");
-                            return;
-                        }
-
-                        // Log the items
-                        let totalKcalLogged = 0;
-                        let names = [];
-                        let macros = { p: 0, c: 0, f: 0 };
-
-                        for (const item of itemsToLog) {
-                            await logMeal(from, item);
-                            totalKcalLogged += item.kcal;
-                            macros.p += item.protein_g;
-                            macros.c += item.carbs_g;
-                            macros.f += item.fat_g;
-                            names.push(item.dish);
-                        }
-
-                        const dailySum = await getDailyKcalSum(from);
-                        const goal = await getUserGoal(from);
-                        const { streak } = await getStreakAndWeekly(from, goal);
-
-                        await sendWhatsAppReply(from, `✅ *Successfully Logged:*\n${names.join(', ')}\n\n🔥 +${totalKcalLogged} kcal\n🥩 ${macros.p}g Protein | 🍞 ${macros.c}g Carbs | 🥑 ${macros.f}g Fat\n\n📊 *Today's Progress*: ${dailySum}/${goal} kcal\n🔥 *${streak} Day Goal Streak!*`);
-                        return; // Escape! Don't let the generic AI coach trigger.
                     }
 
                     // 2. STATELESS MODE: Fetch user history to feed to generic Gemini conversational coach
