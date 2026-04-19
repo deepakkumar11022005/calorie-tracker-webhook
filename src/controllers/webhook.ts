@@ -127,9 +127,14 @@ webhookRouter.post('/', async (req: Request, res: Response) => {
                     const mealsString = await getMealsForToday(from);
                     const { streak, weeklySummary } = await getStreakAndWeekly(from, goal);
 
-                    const aiReply = await analyzeDietConversation(text, mealsString, dailySum, goal, weeklySummary);
+                    const { reply, mealToLog } = await analyzeDietConversation(text, mealsString, dailySum, goal, weeklySummary);
 
-                    await sendWhatsAppReply(from, aiReply);
+                    if (mealToLog) {
+                        await logMeal(from, mealToLog);
+                        console.log(`✅ Text Log Success: ${mealToLog.dish}`);
+                    }
+
+                    await sendWhatsAppReply(from, reply);
 
                 } else {
                     await sendWhatsAppReply(from, `Sorry, I only understand photos of food and text messages!`);

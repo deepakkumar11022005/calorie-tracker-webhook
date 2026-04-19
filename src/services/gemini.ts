@@ -30,30 +30,53 @@ export async function analyzeMealImage(imageBuffer: Buffer, mimeType: string) {
     return JSON.parse(cleanedJson);
 }
 
-export async function analyzeDietConversation(userText: string, mealsString: string, dailySum: number, goal: number, weeklySummary: string): Promise<string> {
-    const prompt = `You are a supportive, concise WhatsApp weight loss coach.
-The user's daily calorie goal is ${goal} kcal. 
-They have consumed ${dailySum} kcal today.
+export async function analyzeDietConversation(userText: string, mealsString: string, dailySum: number, goal: number, weeklySummary: string): Promise<{ reply: string, mealToLog?: any }> {
+    console.log('Asking Gemini for conversational coaching...');
 
-Here is the exact list of foods they ate today:
+    const prompt = `You are a supportive, concise WhatsApp weight loss coach. 
+STRICT GROUNDING RULES:
+- The ONLY source of truth for the user's progress is: Goal: ${goal} kcal, Consumed: ${dailySum} kcal.
+- Do NOT invent or estimate a daily total. If the data says ${dailySum}, you must use ${dailySum}.
+- Use the following meal log for today's history:
 ${mealsString}
-
-Here is their calorie performance over the last 7 days:
+- Use this weekly performance:
 ${weeklySummary}
 
-The user just sent you this message: "${userText}"
+The user just sent you: "${userText}"
 
-Reply to the user strictly in your persona as the coach. Be highly interactive, give analytics or insights on their diet if they ask. Keep it relatively short (1-3 small paragraphs max) since it's a WhatsApp message. Use emojis. 
-If they ask to "List all food I ate", print out the list cleanly. If they ask about their streaks, remind them! 
+YOUR TASKS:
+1. LOGGING: If the user clearly states they ATE or WANT TO LOG a food (e.g. "ate one banana", "log coffee"), return:
+[LOG_MEAL: {"dish": "Banana (1 piece)", "kcal": 105, "protein_g": 1, "carbs_g": 27, "fat_g": 0}]
+Only log if it is an explicit action. Do NOT log if they are just asking a question (e.g. "How many calories in a banana?").
 
-If they ask for meal suggestions or type "/suggest", explicitly calculate their remaining calories (${goal - dailySum} kcal) and recommend a specific, culturally appropriate meal (based on their food history) that fits perfectly into their remaining balance! Provide rough macros for the suggestion. Support their weight loss journey!`;
+2. COACHING: If they ask for a summary, progress, or advice, use the STRICT GROUNDING data. If they've eaten nothing, acknowledge they are starting fresh.
+
+3. SUGGESTIONS: If they type "/suggest", recommend a meal within their remaining ${goal - dailySum} kcal balance. Be specific.
+
+Reply strictly as the coach. Use emojis. Keep it very concise (1-2 sentences where possible).`;
 
     const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: prompt
     });
 
-    return response.text || "I'm having trouble thinking of a reply right now, but you're doing great!";
+    const reply = response.text || "I'm having trouble thinking of a reply right now.";
+
+    // Parse out potential LOG_MEAL signal
+    let mealToLog = null;
+    const logMatch = reply.match(/\[LOG_MEAL:\s*({.*?})\]/);
+    if (logMatch) {
+        try {
+            mealToLog = JSON.parse(logMatch[1]);
+        } catch (e) {
+            console.error("Failed to parse meal log from AI reply");
+        }
+    }
+
+    // Clean the signal out of the user-visible reply
+    const cleanReply = reply.replace(/\[LOG_MEAL:.*?\]/, '').trim();
+
+    return { reply: cleanReply, mealToLog };
 }
 
 export async function parseUserFoodSelection(userText: string, cachedItems: any[]): Promise<any> {
