@@ -87,7 +87,7 @@ webhookRouter.post('/', async (req: Request, res: Response) => {
                             // Extract numbers from text (e.g. "1, 3")
                             const numbers = text.match(/\d+/g);
                             if (numbers) {
-                                numbers.forEach(num => {
+                                numbers.forEach((num: string) => {
                                     const idx = parseInt(num) - 1;
                                     if (cachedItems[idx]) itemsToLog.push(cachedItems[idx]);
                                 });
